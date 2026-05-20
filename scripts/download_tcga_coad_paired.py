@@ -12,6 +12,7 @@ import urllib.request
 
 GDC = "https://api.gdc.cancer.gov"
 GENES = ["APC", "TP53", "KRAS", "NRAS", "BRAF", "PIK3CA", "SMAD4", "FBXW7"]
+CHUNK_SIZE = 1024 * 1024
 
 
 def post_json(endpoint, payload):
@@ -75,23 +76,49 @@ def download_file(file_id, file_name, out_dir, expected_size):
         print(f"exists: {out_path}")
         return out_path
 
+    if os.path.exists(out_path):
+        actual_size = os.path.getsize(out_path)
+        print(f"removing incomplete file: {out_path} ({actual_size} != {expected_size} bytes)")
+        os.remove(out_path)
+    if os.path.exists(tmp_path):
+        print(f"removing interrupted partial download: {tmp_path}")
+        os.remove(tmp_path)
+
     url = f"{GDC}/data/{urllib.parse.quote(file_id)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "codex-gdc-downloader"})
-    with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_path, "wb") as out:
-        total = 0
-        last_report = time.time()
-        while True:
-            chunk = resp.read(1024 * 1024)
-            if not chunk:
-                break
-            out.write(chunk)
-            total += len(chunk)
-            now = time.time()
-            if now - last_report > 10:
-                pct = 100 * total / expected_size if expected_size else 0
-                print(f"downloading {file_name}: {total / 1e6:.1f} MB ({pct:.1f}%)")
-                last_report = now
-    os.replace(tmp_path, out_path)
+    for attempt in range(1, 6):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "codex-gdc-downloader"})
+            with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_path, "wb") as out:
+                total = 0
+                last_report = time.time()
+                while True:
+                    chunk = resp.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    out.write(chunk)
+                    total += len(chunk)
+                    now = time.time()
+                    if now - last_report > 10:
+                        pct = 100 * total / expected_size if expected_size else 0
+                        print(f"downloading {file_name}: {total / 1e6:.1f} MB ({pct:.1f}%)")
+                        last_report = now
+            actual_size = os.path.getsize(tmp_path)
+            if actual_size != expected_size:
+                raise IOError(f"incomplete download for {file_name}: {actual_size} != {expected_size} bytes")
+            os.replace(tmp_path, out_path)
+            return out_path
+        except (OSError, IOError, ConnectionError) as exc:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                    print(f"deleted interrupted partial download: {tmp_path}")
+                except OSError as cleanup_exc:
+                    print(f"warning: could not delete partial file {tmp_path}: {cleanup_exc}", file=sys.stderr)
+            if attempt == 5:
+                raise
+            wait_seconds = 10 * attempt
+            print(f"download interrupted for {file_name}: {exc}; retrying in {wait_seconds}s ({attempt}/5)")
+            time.sleep(wait_seconds)
     return out_path
 
 
