@@ -1,0 +1,13 @@
+# Downloaded data
+tcga_coad_paired_he_mutation/
+*.svs
+*.maf
+*.maf.gz
+
+# Runtime logs and partial downloads
+*.log
+*.partial
+
+# macOS metadata
+._*
+.DS_Store
