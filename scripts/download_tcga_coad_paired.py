@@ -13,6 +13,7 @@ import urllib.request
 GDC = "https://api.gdc.cancer.gov"
 GENES = ["APC", "TP53", "KRAS", "NRAS", "BRAF", "PIK3CA", "SMAD4", "FBXW7"]
 CHUNK_SIZE = 1024 * 1024
+DEFAULT_FILE_RETRIES = 20
 
 
 def post_json(endpoint, payload):
@@ -68,7 +69,7 @@ def sample_id(hit):
     return hit["cases"][0]["samples"][0]["submitter_id"]
 
 
-def download_file(file_id, file_name, out_dir, expected_size):
+def download_file(file_id, file_name, out_dir, expected_size, max_retries):
     os.makedirs(out_dir, exist_ok=True)
     out_path = os.path.join(out_dir, file_name)
     tmp_path = out_path + ".partial"
@@ -85,7 +86,7 @@ def download_file(file_id, file_name, out_dir, expected_size):
         os.remove(tmp_path)
 
     url = f"{GDC}/data/{urllib.parse.quote(file_id)}"
-    for attempt in range(1, 6):
+    for attempt in range(1, max_retries + 1):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "codex-gdc-downloader"})
             with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_path, "wb") as out:
@@ -114,10 +115,10 @@ def download_file(file_id, file_name, out_dir, expected_size):
                     print(f"deleted interrupted partial download: {tmp_path}")
                 except OSError as cleanup_exc:
                     print(f"warning: could not delete partial file {tmp_path}: {cleanup_exc}", file=sys.stderr)
-            if attempt == 5:
+            if attempt == max_retries:
                 raise
-            wait_seconds = 10 * attempt
-            print(f"download interrupted for {file_name}: {exc}; retrying in {wait_seconds}s ({attempt}/5)")
+            wait_seconds = min(10 * attempt, 300)
+            print(f"download interrupted for {file_name}: {exc}; retrying in {wait_seconds}s ({attempt}/{max_retries})")
             time.sleep(wait_seconds)
     return out_path
 
@@ -149,6 +150,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n", type=int, default=3, help="number of paired cases to download")
     parser.add_argument("--out", default="tcga_coad_paired_he_mutation")
+    parser.add_argument("--file-retries", type=int, default=DEFAULT_FILE_RETRIES, help="max retries per individual GDC file")
     args = parser.parse_args()
 
     slide_filters = filt(
@@ -220,8 +222,8 @@ def main():
         case = first_case_id(slide)
         maf = maf_by_case[case]
         print(f"Downloading paired case {case}")
-        slide_path = download_file(slide["file_id"], slide["file_name"], slide_dir, slide["file_size"])
-        maf_path = download_file(maf["file_id"], maf["file_name"], maf_dir, maf["file_size"])
+        slide_path = download_file(slide["file_id"], slide["file_name"], slide_dir, slide["file_size"], args.file_retries)
+        maf_path = download_file(maf["file_id"], maf["file_name"], maf_dir, maf["file_size"], args.file_retries)
         flags, counts, total_variants = parse_maf(maf_path)
         cohort_rows.append(
             {
